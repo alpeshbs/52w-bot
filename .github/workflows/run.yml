@@ -1,0 +1,16 @@
+name: NSE 52W Tracker
+on:
+  schedule:
+    - cron: '30 10 * * 1-5' # સોમવાર થી શુક્રવાર સાંજે ૪:૦૦ વાગ્યે IST (UTC 10:30)
+  workflow_dispatch: # મેન્યુઅલ ટેસ્ટ કરવા માટેનું બટન
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - run: pip install requests pandas
+      - run: python main.py
