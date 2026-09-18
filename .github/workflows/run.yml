@@ -21,5 +21,4 @@ jobs:
 
       - name: Run Script
         run: |
-          find . -name "main.py"
-          python $(find . -name "main.py" | head -n 1)
+          python main.py || python */main.py
