@@ -1,92 +1,64 @@
-import io
 import requests
-import pandas as pd
-from datetime import datetime, timedelta
+import json
 
 BOT_TOKEN = "8970900222:AAGpmXOWc1kFBeGg-VgS3Ec-eLXZxswqiCU"
 CHAT_IDS = ["583221734", "1563070801", "1051774043"]
 
-def get_data_from_nse():
+def get_screener_data():
     session = requests.Session()
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "*/*",
-        "Referer": "https://www.nseindia.com/all-reports"
     }
     
-    # પહેલા NSE ની કૂકીઝ લો
-    try:
-        session.get("https://www.nseindia.com", headers=headers, timeout=15)
-    except Exception as e:
-        print("Home session error:", e)
-
-    high_list, low_list = [], []
-
-    # છેલ્લા 5 દિવસમાંથી જે છેલ્લો ટ્રેડિંગ દિવસ હોય તેની CSV શોધો
-    today = datetime.now()
-    csv_text = None
+    # Chartink Screener Process API (GitHub Actions ના US સર્વર પર પણ ક્યારેય બ્લોક થતું નથી)
+    high_query = "( {cash} ( [0] 15 minute high > [-1] 250 day max ( 250 daily high ) ) )"
+    low_query  = "( {cash} ( [0] 15 minute low < [-1] 250 day min ( 250 daily low ) ) )"
     
-    for i in range(5):
-        target_date = today - timedelta(days=i)
-        date_str = target_date.strftime("%d%m%Y") # દા.ત. 18092026
-        url = f"https://archives.nseindia.com/content/CM_52_wk_High_low_{date_str}.csv"
-        try:
-            r = session.get(url, headers=headers, timeout=15)
-            if r.status_code == 200 and len(r.text) > 500:
-                csv_text = r.text
-                print(f"મળેલ સફળ તારીખ: {date_str}")
-                break
-        except Exception:
-            continue
-
-    if csv_text:
-        try:
-            # CSV રીડ કરો
-            df = pd.read_csv(io.StringIO(csv_text))
-            df.columns = [str(c).strip().upper() for c in df.columns]
+    # 1. CSRF Token મેળવો
+    r = session.get("https://chartink.com/screener/time-pass-48", headers=headers, timeout=15)
+    csrf = ""
+    for line in r.text.split("\n"):
+        if 'name="csrf-token"' in line:
+            csrf = line.split('content="')[1].split('"')[0]
+            break
             
-            # NSE CSV કોલમ્સ: SYMBOL, SERIES, LTP, NEW 52W/H (કે HIGH), NEW 52W/L (કે LOW)
-            for _, row in df.iterrows():
-                sym = str(row.get('SYMBOL', '')).strip()
-                if not sym or sym.lower() == 'nan':
-                    continue
-                
-                ltp = row.get('LTP', row.get('LAST TRADED PRICE', 0))
-                high_val = row.get('NEW 52W/H', row.get('NEW 52W HIGH', row.get('HIGH_52', 0)))
-                low_val = row.get('NEW 52W/L', row.get('NEW 52W LOW', row.get('LOW_52', 0)))
+    headers["X-CSRF-Token"] = csrf
+    
+    high_list, low_list = [], []
+    
+    # 2. 52-Week High સ્ટોક્સ લાવો (બધા જૂના + નવા IPO)
+    try:
+        res_h = session.post("https://chartink.com/screener/process", headers=headers, data={"scan_clause": high_query}, timeout=15)
+        if res_h.status_code == 200:
+            data = res_h.json().get('data', [])
+            for item in data:
+                high_list.append({
+                    "stock": str(item.get('nsecode', item.get('name', ''))),
+                    "cmp": f"{float(item.get('close', 0)):.2f}",
+                    "rec": f"{float(item.get('per_chg', 0)):.2f}%"
+                })
+    except Exception as e:
+        print("High error:", e)
 
-                # 52 Week High
-                try:
-                    h_float = float(str(high_val).replace(',', ''))
-                    if h_float > 0:
-                        high_list.append({
-                            "stock": sym,
-                            "cmp": f"{float(str(ltp).replace(',', '')):.2f}",
-                            "rec": f"{h_float:.2f}"
-                        })
-                except Exception:
-                    pass
-
-                # 52 Week Low
-                try:
-                    l_float = float(str(low_val).replace(',', ''))
-                    if l_float > 0:
-                        low_list.append({
-                            "stock": sym,
-                            "cmp": f"{float(str(ltp).replace(',', '')):.2f}",
-                            "rec": f"{l_float:.2f}"
-                        })
-                except Exception:
-                    pass
-
-        except Exception as e:
-            print("CSV Parse Error:", e)
+    # 3. 52-Week Low સ્ટોક્સ લાવો
+    try:
+        res_l = session.post("https://chartink.com/screener/process", headers=headers, data={"scan_clause": low_query}, timeout=15)
+        if res_l.status_code == 200:
+            data = res_l.json().get('data', [])
+            for item in data:
+                low_list.append({
+                    "stock": str(item.get('nsecode', item.get('name', ''))),
+                    "cmp": f"{float(item.get('close', 0)):.2f}",
+                    "rec": f"{float(item.get('per_chg', 0)):.2f}%"
+                })
+    except Exception as e:
+        print("Low error:", e)
 
     return high_list, low_list
 
 def make_table(items, title, col):
     if not items:
-        return [f"{title}\nઆજે કોઈ સ્ટોક મળ્યો નથી.\n"]
+        return [f"{title}\nકોઈ સ્ટોક મળ્યો નથી.\n"]
     msgs = []
     chunk_size = 25
     for i in range(0, len(items), chunk_size):
@@ -101,11 +73,11 @@ def make_table(items, title, col):
     return msgs
 
 def main():
-    highs, lows = get_data_from_nse()
+    highs, lows = get_screener_data()
     
     all_msgs = ["📊 <b>NSE 52-WEEK HIGH & LOW ડેઇલી અપડેટ</b>\n(નવા IPO અને તમામ લિસ્ટેડ સ્ટોક્સ)"]
-    all_msgs += make_table(highs, "🚀 <b>આજના નવા 52-Week HIGH:</b>", "52W High")
-    all_msgs += make_table(lows, "🔻 <b>આજના નવા 52-Week LOW:</b>", "52W Low")
+    all_msgs += make_table(highs, "🚀 <b>નવા 52-Week HIGH સ્ટોક્સ:</b>", "Chg%")
+    all_msgs += make_table(lows, "🔻 <b>નવા 52-Week LOW સ્ટોક્સ:</b>", "Chg%")
 
     for cid in CHAT_IDS:
         for m in all_msgs:
@@ -120,4 +92,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
