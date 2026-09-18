@@ -1,33 +1,43 @@
 import requests
-import json
 import re
+import json
 
 BOT_TOKEN = "8970900222:AAGpmXOWc1kFBeGg-VgS3Ec-eLXZxswqiCU"
 CHAT_IDS = ["583221734", "1563070801", "1051774043"]
 
 def get_screener_data():
     session = requests.Session()
+    
+    # બ્રાઉઝર હેડર્સ
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9"
     }
-    
-    # માર્કેટ બંધ હોય ત્યારે 'daily' કેન્ડલ જ શુક્રવારનો સાચો રેકોર્ડ આપે છે
-    # [0] daily high >= [-1] 250 day max
-    high_query = "( {cash} ( [0] daily high >= [-1] 250 day max ( 250 daily high ) ) )"
-    low_query  = "( {cash} ( [0] daily low <= [-1] 250 day min ( 250 daily low ) ) )"
-    
-    # 1. CSRF Token મેળવો
-    r = session.get("https://chartink.com/screener/time-pass-48", headers=headers, timeout=15)
-    csrf_match = re.search(r'name="csrf-token" content="([^"]+)"', r.text)
-    csrf = csrf_match.group(1) if csrf_match else ""
-    
-    headers["X-CSRF-Token"] = csrf
-    
+
     high_list, low_list = [], []
-    
-    # 2. 52-Week High સ્ટોક્સ
+
     try:
-        res_h = session.post("https://chartink.com/screener/process", headers=headers, data={"scan_clause": high_query}, timeout=15)
+        # ૧. હોમપેજ હિટ કરીને સેશન કૂકીઝ અને CSRF ટોકન સાથે મેળવો
+        init_res = session.get("https://chartink.com/screener/time-pass-48", headers=headers, timeout=20)
+        csrf_match = re.search(r'<meta name="csrf-token" content="([^"]+)">', init_res.text)
+        csrf = csrf_match.group(1) if csrf_match else ""
+
+        # હેડર્સ અપડેટ કરો
+        post_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "X-CSRF-Token": csrf,
+            "X-Requested-With": "XMLHttpRequest",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "Referer": "https://chartink.com/screener/time-pass-48"
+        }
+
+        # Chartink ની સત્તાવાર 52-Week High & Low ક્વેરી
+        high_query = "( {cash} ( [0] daily high >= [-1] 250 day max ( 1 daily high ) ) )"
+        low_query  = "( {cash} ( [0] daily low <= [-1] 250 day min ( 1 daily low ) ) )"
+
+        # ૨. 52-Week High સ્ટોક્સ
+        res_h = session.post("https://chartink.com/screener/process", headers=post_headers, data={"scan_clause": high_query}, timeout=20)
         if res_h.status_code == 200:
             data = res_h.json().get('data', [])
             for item in data:
@@ -36,12 +46,9 @@ def get_screener_data():
                     "cmp": f"{float(item.get('close', 0)):.2f}",
                     "rec": f"{float(item.get('per_chg', 0)):.2f}%"
                 })
-    except Exception as e:
-        print("High error:", e)
 
-    # 3. 52-Week Low સ્ટોક્સ
-    try:
-        res_l = session.post("https://chartink.com/screener/process", headers=headers, data={"scan_clause": low_query}, timeout=15)
+        # ૩. 52-Week Low સ્ટોક્સ
+        res_l = session.post("https://chartink.com/screener/process", headers=post_headers, data={"scan_clause": low_query}, timeout=20)
         if res_l.status_code == 200:
             data = res_l.json().get('data', [])
             for item in data:
@@ -50,8 +57,9 @@ def get_screener_data():
                     "cmp": f"{float(item.get('close', 0)):.2f}",
                     "rec": f"{float(item.get('per_chg', 0)):.2f}%"
                 })
+
     except Exception as e:
-        print("Low error:", e)
+        print("Scrape Error:", e)
 
     return high_list, low_list
 
@@ -82,7 +90,7 @@ def main():
         for m in all_msgs:
             try:
                 requests.post(
-                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                    f"https://api.telegram.org/bot${BOT_TOKEN}/sendMessage",
                     json={"chat_id": cid, "text": m, "parse_mode": "HTML"},
                     timeout=10
                 )
