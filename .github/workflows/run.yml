@@ -20,4 +20,6 @@ jobs:
         run: pip install requests pandas
 
       - name: Run Script
-        run: python main.py
+        run: |
+          find . -name "main.py"
+          python $(find . -name "main.py" | head -n 1)
