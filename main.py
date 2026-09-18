@@ -1,53 +1,86 @@
 import io
 import requests
 import pandas as pd
+from datetime import datetime, timedelta
 
 BOT_TOKEN = "8970900222:AAGpmXOWc1kFBeGg-VgS3Ec-eLXZxswqiCU"
 CHAT_IDS = ["583221734", "1563070801", "1051774043"]
 
-def get_data():
+def get_data_from_nse():
     session = requests.Session()
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "*/*"
+        "Accept": "*/*",
+        "Referer": "https://www.nseindia.com/all-reports"
     }
     
-    high_list, low_list = [], []
-    
-    # NSE 52W High CSV (તમામ જૂના અને નવા IPO સહિત)
+    # પહેલા NSE ની કૂકીઝ લો
     try:
-        url_high = "https://archives.nseindia.com/content/CM_52_wk_High_low.csv"
-        res = session.get(url_high, headers=headers, timeout=15)
-        if res.status_code == 200:
-            df = pd.read_csv(io.StringIO(res.text))
-            # CSV કોલમ હેન્ડલિંગ
-            df.columns = [c.strip().upper() for c in df.columns]
-            for _, row in df.iterrows():
-                sym = str(row.get('SYMBOL', ''))
-                cmp_val = row.get('LTP', row.get('PREV_CLOSE', 0))
-                h_val = row.get('NEW_52_HIGH', row.get('HIGH', 0))
-                l_val = row.get('NEW_52_LOW', row.get('LOW', 0))
-                
-                if pd.notna(h_val) and float(h_val) > 0:
-                    high_list.append({"stock": sym, "cmp": f"{float(cmp_val):.2f}", "rec": f"{float(h_val):.2f}"})
-                if pd.notna(l_val) and float(l_val) > 0:
-                    low_list.append({"stock": sym, "cmp": f"{float(cmp_val):.2f}", "rec": f"{float(l_val):.2f}"})
+        session.get("https://www.nseindia.com", headers=headers, timeout=15)
     except Exception as e:
-        print("Archive CSV Error:", e)
+        print("Home session error:", e)
 
-    # જો આર્કાઇવ ખાલી હોય તો ડાયરેક્ટ API થી બેકઅપ ફેચ
-    if not high_list and not low_list:
+    high_list, low_list = [], []
+
+    # છેલ્લા 5 દિવસમાંથી જે છેલ્લો ટ્રેડિંગ દિવસ હોય તેની CSV શોધો
+    today = datetime.now()
+    csv_text = None
+    
+    for i in range(5):
+        target_date = today - timedelta(days=i)
+        date_str = target_date.strftime("%d%m%Y") # દા.ત. 18092026
+        url = f"https://archives.nseindia.com/content/CM_52_wk_High_low_{date_str}.csv"
         try:
-            session.get("https://www.nseindia.com", headers=headers, timeout=15)
-            r_high = session.get("https://www.nseindia.com/api/live-analysis-52week-high-low?type=high", headers=headers, timeout=15).json()
-            for r in r_high.get('data', []):
-                high_list.append({"stock": str(r.get('symbol', '')), "cmp": f"{float(r.get('lastPrice', 0)):.2f}", "rec": f"{float(r.get('value', 0)):.2f}"})
+            r = session.get(url, headers=headers, timeout=15)
+            if r.status_code == 200 and len(r.text) > 500:
+                csv_text = r.text
+                print(f"મળેલ સફળ તારીખ: {date_str}")
+                break
+        except Exception:
+            continue
+
+    if csv_text:
+        try:
+            # CSV રીડ કરો
+            df = pd.read_csv(io.StringIO(csv_text))
+            df.columns = [str(c).strip().upper() for c in df.columns]
+            
+            # NSE CSV કોલમ્સ: SYMBOL, SERIES, LTP, NEW 52W/H (કે HIGH), NEW 52W/L (કે LOW)
+            for _, row in df.iterrows():
+                sym = str(row.get('SYMBOL', '')).strip()
+                if not sym or sym.lower() == 'nan':
+                    continue
                 
-            r_low = session.get("https://www.nseindia.com/api/live-analysis-52week-high-low?type=low", headers=headers, timeout=15).json()
-            for r in r_low.get('data', []):
-                low_list.append({"stock": str(r.get('symbol', '')), "cmp": f"{float(r.get('lastPrice', 0)):.2f}", "rec": f"{float(r.get('value', 0)):.2f}"})
+                ltp = row.get('LTP', row.get('LAST TRADED PRICE', 0))
+                high_val = row.get('NEW 52W/H', row.get('NEW 52W HIGH', row.get('HIGH_52', 0)))
+                low_val = row.get('NEW 52W/L', row.get('NEW 52W LOW', row.get('LOW_52', 0)))
+
+                # 52 Week High
+                try:
+                    h_float = float(str(high_val).replace(',', ''))
+                    if h_float > 0:
+                        high_list.append({
+                            "stock": sym,
+                            "cmp": f"{float(str(ltp).replace(',', '')):.2f}",
+                            "rec": f"{h_float:.2f}"
+                        })
+                except Exception:
+                    pass
+
+                # 52 Week Low
+                try:
+                    l_float = float(str(low_val).replace(',', ''))
+                    if l_float > 0:
+                        low_list.append({
+                            "stock": sym,
+                            "cmp": f"{float(str(ltp).replace(',', '')):.2f}",
+                            "rec": f"{l_float:.2f}"
+                        })
+                except Exception:
+                    pass
+
         except Exception as e:
-            print("API Error:", e)
+            print("CSV Parse Error:", e)
 
     return high_list, low_list
 
@@ -68,7 +101,8 @@ def make_table(items, title, col):
     return msgs
 
 def main():
-    highs, lows = get_data()
+    highs, lows = get_data_from_nse()
+    
     all_msgs = ["📊 <b>NSE 52-WEEK HIGH & LOW ડેઇલી અપડેટ</b>\n(નવા IPO અને તમામ લિસ્ટેડ સ્ટોક્સ)"]
     all_msgs += make_table(highs, "🚀 <b>આજના નવા 52-Week HIGH:</b>", "52W High")
     all_msgs += make_table(lows, "🔻 <b>આજના નવા 52-Week LOW:</b>", "52W Low")
@@ -86,3 +120,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
