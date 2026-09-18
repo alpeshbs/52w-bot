@@ -1,7 +1,7 @@
 name: NSE 52W Tracker
 on:
   schedule:
-    - cron: '30 10 * * 1-5' # સોમવાર થી શુક્રવાર સાંજે ૪:૦૦ IST
+    - cron: '30 10 * * 1-5'
   workflow_dispatch:
 
 jobs:
@@ -17,10 +17,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install Dependencies
-        run: |
-          pip install requests pandas
+        run: pip install requests pandas
 
-      - name: Check Files & Run Bot
-        run: |
-          ls -la
-          python main.py
+      - name: Run Script
+        run: python main.py
