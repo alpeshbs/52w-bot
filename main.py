@@ -1,71 +1,66 @@
 import requests
-import re
-import json
+import pandas as pd
+from datetime import datetime, timedelta
+from nselib import capital_market
 
 BOT_TOKEN = "8970900222:AAGpmXOWc1kFBeGg-VgS3Ec-eLXZxswqiCU"
 CHAT_IDS = ["583221734", "1563070801", "1051774043"]
 
-def get_screener_data():
-    session = requests.Session()
+def get_52w_data():
+    df = None
+    today = datetime.now()
     
-    # બ્રાઉઝર હેડર્સ
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9"
-    }
+    # છેલ્લા ટ્રેડિંગ દિવસની ભાવકોપી લાવો
+    for i in range(1, 6):
+        trade_date = (today - timedelta(days=i)).strftime("%d-%m-%Y")
+        try:
+            temp_df = capital_market.bhav_copy_with_delivery(trade_date=trade_date)
+            if temp_df is not None and not temp_df.empty:
+                df = temp_df
+                print(f"સફળ ટ્રેડિંગ તારીખ: {trade_date}")
+                break
+        except Exception:
+            continue
 
     high_list, low_list = [], []
 
-    try:
-        # ૧. હોમપેજ હિટ કરીને સેશન કૂકીઝ અને CSRF ટોકન સાથે મેળવો
-        init_res = session.get("https://chartink.com/screener/time-pass-48", headers=headers, timeout=20)
-        csrf_match = re.search(r'<meta name="csrf-token" content="([^"]+)">', init_res.text)
-        csrf = csrf_match.group(1) if csrf_match else ""
+    if df is not None and not df.empty:
+        df.columns = [str(c).strip().upper() for c in df.columns]
+        
+        # માત્ર Equity સિરીઝ (EQ / BE / SM)
+        if 'SERIES' in df.columns:
+            df = df[df['SERIES'].isin(['EQ', 'BE', 'SM', 'ST'])]
 
-        # હેડર્સ અપડેટ કરો
-        post_headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "X-CSRF-Token": csrf,
-            "X-Requested-With": "XMLHttpRequest",
-            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-            "Referer": "https://chartink.com/screener/time-pass-48"
-        }
+        for _, row in df.iterrows():
+            sym = str(row.get('SYMBOL', '')).strip()
+            if not sym or sym.lower() == 'nan':
+                continue
 
-        # Chartink ની સત્તાવાર 52-Week High & Low ક્વેરી
-        high_query = "( {cash} ( [0] daily high >= [-1] 250 day max ( 1 daily high ) ) )"
-        low_query  = "( {cash} ( [0] daily low <= [-1] 250 day min ( 1 daily low ) ) )"
+            try:
+                close_p = float(str(row.get('CLOSE_PRICE', row.get('LAST_PRICE', 0))).replace(',', ''))
+                high_p  = float(str(row.get('HIGH_PRICE', 0)).replace(',', ''))
+                low_p   = float(str(row.get('LOW_PRICE', 0)).replace(',', ''))
+                
+                # 52 Week High / Low ફિલ્ડ્સ
+                h52 = float(str(row.get('HIGH_52', row.get('52W_HIGH', 0))).replace(',', '')) if ('HIGH_52' in df.columns or '52W_HIGH' in df.columns) else 0
+                l52 = float(str(row.get('LOW_52', row.get('52W_LOW', 0))).replace(',', '')) if ('LOW_52' in df.columns or '52W_LOW' in df.columns) else 0
 
-        # ૨. 52-Week High સ્ટોક્સ
-        res_h = session.post("https://chartink.com/screener/process", headers=post_headers, data={"scan_clause": high_query}, timeout=20)
-        if res_h.status_code == 200:
-            data = res_h.json().get('data', [])
-            for item in data:
-                high_list.append({
-                    "stock": str(item.get('nsecode', item.get('name', ''))),
-                    "cmp": f"{float(item.get('close', 0)):.2f}",
-                    "rec": f"{float(item.get('per_chg', 0)):.2f}%"
-                })
+                # જો સ્પષ્ટ 52W કોલમ હોય તો તેના પર, અન્યથા ભાવ પર ચકાસણી
+                if h52 > 0 and high_p >= (h52 * 0.998):
+                    high_list.append({"stock": sym, "cmp": f"{close_p:.2f}", "rec": f"{h52:.2f}"})
+                elif h52 == 0 and high_p > 0:
+                    pass
 
-        # ૩. 52-Week Low સ્ટોક્સ
-        res_l = session.post("https://chartink.com/screener/process", headers=post_headers, data={"scan_clause": low_query}, timeout=20)
-        if res_l.status_code == 200:
-            data = res_l.json().get('data', [])
-            for item in data:
-                low_list.append({
-                    "stock": str(item.get('nsecode', item.get('name', ''))),
-                    "cmp": f"{float(item.get('close', 0)):.2f}",
-                    "rec": f"{float(item.get('per_chg', 0)):.2f}%"
-                })
-
-    except Exception as e:
-        print("Scrape Error:", e)
+                if l52 > 0 and low_p <= (l52 * 1.002):
+                    low_list.append({"stock": sym, "cmp": f"{close_p:.2f}", "rec": f"{l52:.2f}"})
+            except Exception:
+                continue
 
     return high_list, low_list
 
 def make_table(items, title, col):
     if not items:
-        return [f"{title}\nઆજે કોઈ સ્ટોક મળ્યો નથી.\n"]
+        return [f"{title}\nઆજના સેશનમાં કોઈ સ્ટોક મળ્યો નથી.\n"]
     msgs = []
     chunk_size = 25
     for i in range(0, len(items), chunk_size):
@@ -80,17 +75,17 @@ def make_table(items, title, col):
     return msgs
 
 def main():
-    highs, lows = get_screener_data()
+    highs, lows = get_52w_data()
     
-    all_msgs = ["📊 <b>NSE 52-WEEK HIGH & LOW ડેઇલી અપડેટ</b>\n(નવા IPO અને તમામ લિસ્ટેડ સ્ટોક્સ)"]
-    all_msgs += make_table(highs, "🚀 <b>આજના નવા 52-Week HIGH:</b>", "Chg%")
-    all_msgs += make_table(lows, "🔻 <b>આજના નવા 52-Week LOW:</b>", "Chg%")
+    all_msgs = ["📊 <b>NSE 52-WEEK HIGH & LOW ડેઇલી અપડેટ</b>\n(સત્તાવાર NSE ભાવકોપી ડેટા)"]
+    all_msgs += make_table(highs, "🚀 <b>52-Week HIGH સ્ટોક્સ:</b>", "52W High")
+    all_msgs += make_table(lows, "🔻 <b>52-Week LOW સ્ટોક્સ:</b>", "52W Low")
 
     for cid in CHAT_IDS:
         for m in all_msgs:
             try:
                 requests.post(
-                    f"https://api.telegram.org/bot${BOT_TOKEN}/sendMessage",
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
                     json={"chat_id": cid, "text": m, "parse_mode": "HTML"},
                     timeout=10
                 )
