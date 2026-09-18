@@ -17,8 +17,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install Dependencies
-        run: pip install requests pandas
+        run: pip install requests pandas nselib
 
       - name: Run Script
-        run: |
-          python main.py || python */main.py
+        run: python main.py
