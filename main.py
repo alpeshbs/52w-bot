@@ -17,60 +17,46 @@ def send_telegram(text):
     except Exception as e:
         print("Telegram error:", e)
 
-def run_diagnostic():
-    # UTC માંથી સીધો ભારતીય સમય (IST = UTC + 5:30)
+def main():
     now_ist = datetime.utcnow() + timedelta(hours=5, minutes=30)
-
     session = requests.Session()
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "*/*",
         "Referer": "https://www.nseindia.com/all-reports"
     }
 
-    try:
-        session.get("https://www.nseindia.com", headers=headers, timeout=15)
-    except Exception:
-        pass
-
-    logs = []
     found_file = None
     file_content = ""
-    used_date_str = ""
 
-    # છેલ્લા 4 ટ્રેડિંગ દિવસ ચેક કરો
-    for i in range(1, 5):
+    # છેલ્લા 5 દિવસમાંથી સૌથી તાજી ફાઇલ ખેંચો
+    for i in range(1, 6):
         t_date = now_ist - timedelta(days=i)
-        d_str = t_date.strftime("%d%m%Y")          # 18092026
-        dt_display = t_date.strftime("%d-%b-%Y")    # 18-Sep-2026
+        d_str = t_date.strftime("%d%m%Y")
 
-        candidate_urls = [
+        urls = [
             f"https://nsearchives.nseindia.com/content/CM_52_wk_High_low_{d_str}.csv",
-            f"https://archives.nseindia.com/content/CM_52_wk_High_low_{d_str}.csv",
-            f"https://www.nseindia.com/api/reports-download?filename=CM_52_wk_High_low_{d_str}.csv&type=equities"
+            f"https://archives.nseindia.com/content/CM_52_wk_High_low_{d_str}.csv"
         ]
 
-        for u in candidate_urls:
+        for u in urls:
             try:
                 res = session.get(u, headers=headers, timeout=12)
-                short_u = u.split("/")[-1]
-                logs.append(f"{short_u} ➔ {res.status_code}")
-                if res.status_code == 200 and len(res.text) > 1000:
+                if res.status_code == 200 and len(res.text) > 2000:
                     found_file = u
                     file_content = res.text
-                    used_date_str = dt_display
                     break
-            except Exception as ex:
-                logs.append(f"Err: {str(ex)[:15]}")
+            except Exception:
+                continue
 
         if found_file:
             break
 
     if not found_file:
-        send_telegram("❌ <b>ફાઈલ ન મળી!</b>\n" + "\n".join(logs[:6]))
+        send_telegram("❌ NSE 52W રિપોર્ટ ફાઈલ ડાઉનલોડ થઈ શકી નથી.")
         return
 
+    # લાઈન ૩ થી અસલી CSV ડેટા શરૂ થાય છે
     lines = file_content.splitlines()
     header_idx = -1
     for idx, l in enumerate(lines[:10]):
@@ -78,64 +64,92 @@ def run_diagnostic():
             header_idx = idx
             break
 
-    if header_idx == -1:
-        send_telegram(f"⚠️ ફાઈલ મળી પણ SYMBOL હેડર ન મળ્યું: {lines[0][:40]}")
-        return
-
     df = pd.read_csv(io.StringIO("\n".join(lines[header_idx:])))
 
+    # કોલમ નામો
+    # ['SYMBOL', 'SERIES', 'Adjusted_52_Week_High', '52_Week_High_Date', 'Adjusted_52_Week_Low', '52_Week_Low_DT']
     sym_col = df.columns[0]
-    high_val_col = df.columns[2]
-    high_dt_col = df.columns[3]
-    low_val_col = df.columns[4]
-    low_dt_col = df.columns[5]
+    series_col = df.columns[1]
+    h_val_col = df.columns[2]
+    h_dt_col = df.columns[3]
+    l_val_col = df.columns[4]
+    l_dt_col = df.columns[5]
 
-    # તારીખ સરખામણી માટે (દા.ત. '18-sep-2026' અથવા '18-sep-26')
-    day = used_date_str[:2].lower()
-    mon = used_date_str[3:6].lower()
-    yr_full = used_date_str[-4:].lower()
-    yr_short = used_date_str[-2:].lower()
+    # ૧. ફાઈલમાં રહેલી સૌથી તાજી (Latest) ટ્રેડિંગ તારીખ આપોઆપ શોધો
+    all_dates = pd.concat([
+        pd.to_datetime(df[h_dt_col].replace('-', None), format="%d-%b-%Y", errors='coerce'),
+        pd.to_datetime(df[l_dt_col].replace('-', None), format="%d-%b-%Y", errors='coerce')
+    ]).dropna()
 
-    highs, lows = [], []
-    for _, row in df.iterrows():
+    if all_dates.empty:
+        send_telegram("⚠️ ફાઈલમાં કોઈ માન્ય તારીખ મળી નથી.")
+        return
+
+    latest_date_dt = all_dates.max()
+    latest_date_str = latest_date_dt.strftime("%d-%b-%Y").upper()
+
+    # ૨. માત્ર ઇક્વિટી સ્ટોક્સ અને ETFs ફિલ્ટર કરો
+    allowed_series = ['EQ', 'BE', 'SM', 'ST', 'BZ', 'E1', 'E2']
+    df_filtered = df[df[series_col].isin(allowed_series)]
+
+    high_list, low_list = [], []
+
+    for _, row in df_filtered.iterrows():
         try:
-            s = str(row[sym_col]).strip()
-            if not s or s.lower() in ['nan', '-', 'symbol']:
+            sym = str(row[sym_col]).strip()
+            if not sym or sym in ['-', 'nan']:
                 continue
 
-            h_dt = str(row[high_dt_col]).replace(" ", "").lower()
-            if (f"{day}-{mon}-{yr_full}" in h_dt) or (f"{day}-{mon}-{yr_short}" in h_dt):
-                h_p = str(row[high_val_col]).replace(',', '').strip()
-                if h_p != '-':
-                    highs.append({"stock": s, "val": h_p})
+            # 52W High ફિલ્ટર (તાજી તારીખ મુજબ)
+            h_dt = str(row[h_dt_col]).strip().upper()
+            if h_dt == latest_date_str:
+                val = str(row[h_val_col]).replace(',', '').strip()
+                if val != '-':
+                    high_list.append({"stock": sym, "val": f"{float(val):.2f}"})
 
-            l_dt = str(row[low_dt_col]).replace(" ", "").lower()
-            if (f"{day}-{mon}-{yr_full}" in l_dt) or (f"{day}-{mon}-{yr_short}" in l_dt):
-                l_p = str(row[low_val_col]).replace(',', '').strip()
-                if l_p != '-':
-                    lows.append({"stock": s, "val": l_p})
+            # 52W Low ફિલ્ટર (તાજી તારીખ મુજબ)
+            l_dt = str(row[l_dt_col]).strip().upper()
+            if l_dt == latest_date_str:
+                val = str(row[l_val_col]).replace(',', '').strip()
+                if val != '-':
+                    low_list.append({"stock": sym, "val": f"{float(val):.2f}"})
         except Exception:
             continue
 
-    msg = f"✅ <b>NSE ડેટા રિપોર્ટ ({used_date_str})</b>\nકુલ લિસ્ટેડ સ્ટોક્સ: {len(df)}\n"
-    msg += f"🚀 52W High: {len(highs)} | 🔻 52W Low: {len(lows)}\n\n"
+    # ૩. ટેલિગ્રામ પર રિપોર્ટ મોકલો
+    header_msg = (
+        f"📊 <b>NSE 52-WEEK HIGH & LOW રિપોર્ટ</b>\n"
+        f"📅 સેશન તારીખ: <b>{latest_date_str}</b>\n"
+        f"🚀 52W High: {len(high_list)} સ્ટોક્સ/ETFs\n"
+        f"🔻 52W Low: {len(low_list)} સ્ટોક્સ/ETFs\n"
+    )
+    send_telegram(header_msg)
 
-    if highs:
-        msg += "<b>52-Week High (ટોપ 20):</b>\n<pre>"
-        msg += "Symbol     | 52W High\n----------------------\n"
-        for item in highs[:20]:
-            msg += f"{item['stock'][:10]:<10} | {item['val']:<10}\n"
-        msg += "</pre>\n"
+    # 52W High ટેબલ (ભાગ પાડીને મોકલશે જેથી મેસેજ કપાય નહીં)
+    if high_list:
+        chunk_size = 30
+        for i in range(0, len(high_list), chunk_size):
+            chunk = high_list[i:i + chunk_size]
+            part_str = f" (ભાગ {i//chunk_size + 1})" if len(high_list) > chunk_size else ""
+            msg = f"🚀 <b>52-Week HIGH સ્ટોક્સ & ETFs{part_str}:</b>\n<pre>"
+            msg += "Symbol     | 52W High Price\n---------------------------\n"
+            for s in chunk:
+                msg += f"{s['stock'][:10]:<10} | {s['val']:<14}\n"
+            msg += "</pre>"
+            send_telegram(msg)
 
-    if lows:
-        msg += "<b>52-Week Low (ટોપ 20):</b>\n<pre>"
-        msg += "Symbol     | 52W Low\n----------------------\n"
-        for item in lows[:20]:
-            msg += f"{item['stock'][:10]:<10} | {item['val']:<10}\n"
-        msg += "</pre>"
-
-    send_telegram(msg)
+    # 52W Low ટેબલ
+    if low_list:
+        chunk_size = 30
+        for i in range(0, len(low_list), chunk_size):
+            chunk = low_list[i:i + chunk_size]
+            part_str = f" (ભાગ {i//chunk_size + 1})" if len(low_list) > chunk_size else ""
+            msg = f"🔻 <b>52-Week LOW સ્ટોક્સ & ETFs{part_str}:</b>\n<pre>"
+            msg += "Symbol     | 52W Low Price \n---------------------------\n"
+            for s in chunk:
+                msg += f"{s['stock'][:10]:<10} | {s['val']:<14}\n"
+            msg += "</pre>"
+            send_telegram(msg)
 
 if __name__ == "__main__":
-    run_diagnostic()
-                
+    main()
