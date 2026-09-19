@@ -29,9 +29,12 @@ def main():
     found_file = None
     file_content = ""
 
-    # છેલ્લા 5 દિવસમાંથી સૌથી તાજી ફાઇલ ખેંચો
-    for i in range(1, 6):
-        t_date = now_ist - timedelta(days=i)
+    # હવે +3 થી -5 દિવસ સુધી ચેક કરશે:
+    # કારણ કે શુક્રવારે સાંજે NSE સોમવાર (+2 કે +3 દિવસ) ના નામવાળી ફાઈલ 'Effective for Next Date' તરીકે અપલોડ કરે છે!
+    check_offsets = [3, 2, 1, 0, -1, -2, -3]
+
+    for offset in check_offsets:
+        t_date = now_ist + timedelta(days=offset)
         d_str = t_date.strftime("%d%m%Y")
 
         urls = [
@@ -49,6 +52,7 @@ def main():
             except Exception:
                 continue
 
+        # સૌથી લેટેસ્ટ તારીખની ફાઈલ મળતાં જ લૂપ બંધ કરો
         if found_file:
             break
 
@@ -56,7 +60,7 @@ def main():
         send_telegram("❌ NSE 52W રિપોર્ટ ફાઈલ ડાઉનલોડ થઈ શકી નથી.")
         return
 
-    # લાઈન ૩ થી અસલી CSV ડેટા શરૂ થાય છે
+    # હેડર લાઈન શોધો
     lines = file_content.splitlines()
     header_idx = -1
     for idx, l in enumerate(lines[:10]):
@@ -66,8 +70,6 @@ def main():
 
     df = pd.read_csv(io.StringIO("\n".join(lines[header_idx:])))
 
-    # કોલમ નામો
-    # ['SYMBOL', 'SERIES', 'Adjusted_52_Week_High', '52_Week_High_Date', 'Adjusted_52_Week_Low', '52_Week_Low_DT']
     sym_col = df.columns[0]
     series_col = df.columns[1]
     h_val_col = df.columns[2]
@@ -75,7 +77,7 @@ def main():
     l_val_col = df.columns[4]
     l_dt_col = df.columns[5]
 
-    # ૧. ફાઈલમાં રહેલી સૌથી તાજી (Latest) ટ્રેડિંગ તારીખ આપોઆપ શોધો
+    # ફાઈલમાંથી સૌથી છેલ્લી (લેટેસ્ટ) ટ્રેડિંગ તારીખ શોધો
     all_dates = pd.concat([
         pd.to_datetime(df[h_dt_col].replace('-', None), format="%d-%b-%Y", errors='coerce'),
         pd.to_datetime(df[l_dt_col].replace('-', None), format="%d-%b-%Y", errors='coerce')
@@ -88,7 +90,7 @@ def main():
     latest_date_dt = all_dates.max()
     latest_date_str = latest_date_dt.strftime("%d-%b-%Y").upper()
 
-    # ૨. માત્ર ઇક્વિટી સ્ટોક્સ અને ETFs ફિલ્ટર કરો
+    # સ્ટોક્સ અને ETFs ફિલ્ટર
     allowed_series = ['EQ', 'BE', 'SM', 'ST', 'BZ', 'E1', 'E2']
     df_filtered = df[df[series_col].isin(allowed_series)]
 
@@ -100,14 +102,14 @@ def main():
             if not sym or sym in ['-', 'nan']:
                 continue
 
-            # 52W High ફિલ્ટર (તાજી તારીખ મુજબ)
+            # High ચેક
             h_dt = str(row[h_dt_col]).strip().upper()
             if h_dt == latest_date_str:
                 val = str(row[h_val_col]).replace(',', '').strip()
                 if val != '-':
                     high_list.append({"stock": sym, "val": f"{float(val):.2f}"})
 
-            # 52W Low ફિલ્ટર (તાજી તારીખ મુજબ)
+            # Low ચેક
             l_dt = str(row[l_dt_col]).strip().upper()
             if l_dt == latest_date_str:
                 val = str(row[l_val_col]).replace(',', '').strip()
@@ -116,7 +118,6 @@ def main():
         except Exception:
             continue
 
-    # ૩. ટેલિગ્રામ પર રિપોર્ટ મોકલો
     header_msg = (
         f"📊 <b>NSE 52-WEEK HIGH & LOW રિપોર્ટ</b>\n"
         f"📅 સેશન તારીખ: <b>{latest_date_str}</b>\n"
@@ -125,7 +126,7 @@ def main():
     )
     send_telegram(header_msg)
 
-    # 52W High ટેબલ (ભાગ પાડીને મોકલશે જેથી મેસેજ કપાય નહીં)
+    # High લિસ્ટ મોકલો
     if high_list:
         chunk_size = 30
         for i in range(0, len(high_list), chunk_size):
@@ -138,7 +139,7 @@ def main():
             msg += "</pre>"
             send_telegram(msg)
 
-    # 52W Low ટેબલ
+    # Low લિસ્ટ મોકલો
     if low_list:
         chunk_size = 30
         for i in range(0, len(low_list), chunk_size):
