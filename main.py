@@ -1,98 +1,109 @@
+import io
 import requests
-from bs4 import BeautifulSoup
+import pandas as pd
+from datetime import datetime, timedelta
 
 BOT_TOKEN = "8970900222:AAGpmXOWc1kFBeGg-VgS3Ec-eLXZxswqiCU"
-CHAT_IDS = ["583221734", "1563070801", "1051774043"]
+
+# માત્ર આ એક જ ID પર મેસેજ જશે
+TARGET_CHAT_ID = "1051774043"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9"
 }
 
 def get_52w_data():
-    high_list = []
-    low_list = []
-
-    # 1. 52-Week High Stocks (NSE)
+    session = requests.Session()
+    high_list, low_list = [], []
+    
+    # 1. Chartink સત્તાવાર ડેઇલી ક્લોઝિંગ સ્કેનર (માર્કેટ બંધ હોય તો પણ શુક્રવારનો ડેટા આપે છે)
     try:
-        url_high = "https://money.rediff.com/gainers/nse/daily/nifty52weekhigh"
-        r = requests.get(url_high, headers=HEADERS, timeout=20)
-        if r.status_code == 200:
-            soup = BeautifulSoup(r.text, "html.parser")
-            table = soup.find("table", {"class": "dataTable"})
-            if table:
-                rows = table.find_all("tr")[1:] # હેડર છોડીને
-                for row in rows:
-                    cols = [c.text.strip() for c in row.find_all("td")]
-                    if len(cols) >= 5:
-                        company = cols[0]
-                        cmp_val = cols[3].replace(',', '')
-                        high_val = cols[4].replace(',', '')
-                        high_list.append({
-                            "stock": company,
-                            "cmp": cmp_val,
-                            "rec": high_val
-                        })
-    except Exception as e:
-        print("High error:", e)
+        r = session.get("https://chartink.com/screener/time-pass-48", headers=HEADERS, timeout=15)
+        csrf = ""
+        for line in r.text.split("\n"):
+            if 'csrf-token' in line:
+                csrf = line.split('content="')[1].split('"')[0]
+                break
+        
+        post_headers = {
+            "User-Agent": HEADERS["User-Agent"],
+            "X-CSRF-Token": csrf,
+            "X-Requested-With": "XMLHttpRequest"
+        }
+        
+        # High query
+        h_res = session.post(
+            "https://chartink.com/screener/process",
+            headers=post_headers,
+            data={"scan_clause": "( {cash} ( [0] daily high >= [-1] 250 day max ( 1 daily high ) ) )"},
+            timeout=15
+        )
+        if h_res.status_code == 200:
+            for item in h_res.json().get('data', []):
+                high_list.append({
+                    "stock": str(item.get('nsecode', item.get('name', ''))),
+                    "cmp": f"{float(item.get('close', 0)):.2f}",
+                    "rec": f"{float(item.get('per_chg', 0)):.2f}%"
+                })
 
-    # 2. 52-Week Low Stocks (NSE)
-    try:
-        url_low = "https://money.rediff.com/losers/nse/daily/nifty52weeklow"
-        r = requests.get(url_low, headers=HEADERS, timeout=20)
-        if r.status_code == 200:
-            soup = BeautifulSoup(r.text, "html.parser")
-            table = soup.find("table", {"class": "dataTable"})
-            if table:
-                rows = table.find_all("tr")[1:]
-                for row in rows:
-                    cols = [c.text.strip() for c in row.find_all("td")]
-                    if len(cols) >= 5:
-                        company = cols[0]
-                        cmp_val = cols[3].replace(',', '')
-                        low_val = cols[4].replace(',', '')
-                        low_list.append({
-                            "stock": company,
-                            "cmp": cmp_val,
-                            "rec": low_val
-                        })
+        # Low query
+        l_res = session.post(
+            "https://chartink.com/screener/process",
+            headers=post_headers,
+            data={"scan_clause": "( {cash} ( [0] daily low <= [-1] 250 day min ( 1 daily low ) ) )"},
+            timeout=15
+        )
+        if l_res.status_code == 200:
+            for item in l_res.json().get('data', []):
+                low_list.append({
+                    "stock": str(item.get('nsecode', item.get('name', ''))),
+                    "cmp": f"{float(item.get('close', 0)):.2f}",
+                    "rec": f"{float(item.get('per_chg', 0)):.2f}%"
+                })
     except Exception as e:
-        print("Low error:", e)
+        print("Chartink fetch error:", e)
 
     return high_list, low_list
 
-def make_table(items, title, col):
-    if not items:
-        return [f"{title}\nઆજના સેશનમાં કોઈ સ્ટોક મળ્યો નથી.\n"]
-    msgs = []
-    chunk_size = 25
-    for i in range(0, len(items), chunk_size):
-        chunk = items[i:i+chunk_size]
-        t = f"{title} (ભાગ {i//chunk_size + 1})\n" if len(items) > chunk_size else f"{title}\n"
-        t += f"<pre>Company    | CMP      | {col:<8}\n--------------------------------\n"
-        for s in chunk:
-            c_name = s['stock'][:10]
-            t += f"{c_name:<10} | {s['cmp']:<8} | {s['rec']:<8}\n"
-        t += "</pre>\n"
-        msgs.append(t)
-    return msgs
+def send_telegram(text):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    requests.post(url, json={
+        "chat_id": TARGET_CHAT_ID,
+        "text": text,
+        "parse_mode": "HTML"
+    }, timeout=10)
 
 def main():
     highs, lows = get_52w_data()
-    all_msgs = ["📊 <b>NSE 52-WEEK HIGH & LOW ડેઇલી અપડેટ</b>\n(તમામ લિસ્ટેડ સ્ટોક્સ અને નવા રેકોર્ડ્સ)"]
-    all_msgs += make_table(highs, "🚀 <b>52-Week HIGH સ્ટોક્સ:</b>", "52W High")
-    all_msgs += make_table(lows, "🔻 <b>52-Week LOW સ્ટોક્સ:</b>", "52W Low")
+    
+    # જો બંને ખાલી હોય, તો ત્રણ-ત્રણ નકામા મેસેજ મોકલવાને બદલે માત્ર એક જ સ્પષ્ટ સૂચના જશે
+    if not highs and not lows:
+        send_telegram("⚠️ <b>NSE અપડેટ:</b> આજના સેશનમાં કોઈ 52-Week High કે Low સ્ટોક મળ્યો નથી (અથવા માર્કેટ હોલિડે ડેટા ઉપલબ્ધ નથી).")
+        return
 
-    for cid in CHAT_IDS:
-        for m in all_msgs:
-            try:
-                requests.post(
-                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                    json={"chat_id": cid, "text": m, "parse_mode": "HTML"},
-                    timeout=10
-                )
-            except Exception as e:
-                print(f"Send error for {cid}: {e}")
+    # માત્ર સ્ટોક્સ મળે ત્યારે જ આખું સિંગલ અથવા ચોખ્ખું ટેબલ મોકલો
+    header = "📊 <b>NSE 52-WEEK HIGH & LOW અપડેટ</b>\n(તમામ લિસ્ટેડ સ્ટોક્સ)\n\n"
+    
+    if highs:
+        msg = header + "🚀 <b>આજના 52-Week HIGH સ્ટોક્સ:</b>\n<pre>"
+        msg += "Stock      | CMP      | Chg%    \n--------------------------------\n"
+        for s in highs[:30]:
+            sym = s['stock'][:10]
+            msg += f"{sym:<10} | {s['cmp']:<8} | {s['rec']:<8}\n"
+        msg += "</pre>"
+        send_telegram(msg)
+        header = "" # બીજી વાર હેડર રીપીટ ન થાય
+
+    if lows:
+        msg = (header if header else "") + "🔻 <b>આજના 52-Week LOW સ્ટોક્સ:</b>\n<pre>"
+        msg += "Stock      | CMP      | Chg%    \n--------------------------------\n"
+        for s in lows[:30]:
+            sym = s['stock'][:10]
+            msg += f"{sym:<10} | {s['cmp']:<8} | {s['rec']:<8}\n"
+        msg += "</pre>"
+        send_telegram(msg)
 
 if __name__ == "__main__":
     main()
-    
