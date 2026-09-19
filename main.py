@@ -1,5 +1,4 @@
 import io
-import zipfile
 import requests
 import pandas as pd
 from datetime import datetime, timedelta
@@ -13,7 +12,7 @@ HEADERS = {
     "Referer": "https://www.nseindia.com/"
 }
 
-def get_nse_bhavcopy():
+def get_52w_data():
     session = requests.Session()
     try:
         session.get("https://www.nseindia.com", headers=HEADERS, timeout=15)
@@ -21,88 +20,71 @@ def get_nse_bhavcopy():
         pass
 
     today = datetime.now()
-    df = None
+    high_list, low_list = [], []
+    matched_date_str = ""
 
-    # છેલ્લા 5 દિવસમાંથી છેલ્લી ઉપલબ્ધ સત્તાવાર ભાવકોપી
+    # છેલ્લા 5 દિવસમાંથી ઉપલબ્ધ ફાઇલ શોધો
     for i in range(5):
         target_date = today - timedelta(days=i)
-        d_str = target_date.strftime("%Y%m%d")
-        url = f"https://nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_{d_str}_F_0000.csv.zip"
-        try:
-            r = session.get(url, headers=HEADERS, timeout=15)
-            if r.status_code == 200:
-                with zipfile.ZipFile(io.BytesIO(r.content)) as z:
-                    csv_filename = z.namelist()[0]
-                    with z.open(csv_filename) as f:
-                        df = pd.read_csv(f)
-                        print(f"Bhavcopy ડાઉનલોડ થઈ: {d_str}")
-                        break
-        except Exception:
-            continue
+        d_str = target_date.strftime("%d%m%Y")          # 18092026
+        check_date = target_date.strftime("%d-%b-%Y")   # 18-Sep-2026
 
-    # જૂનો ફોર્મેટ બેકઅપ
-    if df is None:
-        for i in range(5):
-            target_date = today - timedelta(days=i)
-            day = target_date.strftime("%d")
-            mon = target_date.strftime("%b").upper()
-            yr = target_date.strftime("%Y")
-            url = f"https://archives.nseindia.com/content/historical/EQUITIES/{yr}/{mon}/cm{day}{mon}{yr}bhav.csv.zip"
+        url = f"https://nsearchives.nseindia.com/content/CM_52_wk_High_low_{d_str}.csv"
+        url_alt = f"https://archives.nseindia.com/content/CM_52_wk_High_low_{d_str}.csv"
+
+        content = None
+        for u in [url, url_alt]:
             try:
-                r = session.get(url, headers=HEADERS, timeout=15)
-                if r.status_code == 200:
-                    with zipfile.ZipFile(io.BytesIO(r.content)) as z:
-                        csv_filename = z.namelist()[0]
-                        with z.open(csv_filename) as f:
-                            df = pd.read_csv(f)
-                            print(f"જૂની Bhavcopy મળી: {day}{mon}{yr}")
-                            break
+                r = session.get(u, headers=HEADERS, timeout=15)
+                if r.status_code == 200 and len(r.text) > 1000:
+                    content = r.text
+                    matched_date_str = check_date
+                    break
             except Exception:
                 continue
 
-    return df
+        if content:
+            # લાઇન 3 થી હેડર્સ શરૂ થાય છે (Skip initial 2 lines)
+            df = pd.read_csv(io.StringIO(content), skiprows=2)
+            df.columns = [str(c).strip().replace(' ', '_').upper() for c in df.columns]
 
-def process_data(df):
-    high_list, low_list = [], []
-    if df is None or df.empty:
-        return high_list, low_list
+            # કોલમ્સ: SYMBOL, SERIES, ADJUSTED_52_WEEK_HIGH, 52_WEEK_HIGH_DT, ADJUSTED_52_WEEK_LOW, 52_WEEK_LOW_DT
+            sym_col = df.columns[0]
+            series_col = df.columns[1]
+            high_val_col = df.columns[2]
+            high_dt_col = df.columns[3]
+            low_val_col = df.columns[4]
+            low_dt_col = df.columns[5]
 
-    df.columns = [str(c).strip().upper() for c in df.columns]
+            # શેર્સ અને ETFs (EQ, BE, SM, ST, E1, E2)
+            allowed_series = ['EQ', 'BE', 'SM', 'ST', 'E1', 'E2']
+            if series_col in df.columns:
+                df = df[df[series_col].isin(allowed_series)]
 
-    series_col = 'SCTYSRS' if 'SCTYSRS' in df.columns else 'SERIES'
-    symbol_col = 'TRADGSSYM' if 'TRADGSSYM' in df.columns else 'SYMBOL'
-    close_col  = 'CLSPRC' if 'CLSPRC' in df.columns else 'CLOSE'
-    high_col   = 'HGSTPRC' if 'HGSTPRC' in df.columns else 'HIGH'
-    low_col    = 'LWSTPRC' if 'LWSTPRC' in df.columns else 'LOW'
-    high52_col = 'HIGH52' if 'HIGH52' in df.columns else ('52W_HIGH' if '52W_HIGH' in df.columns else None)
-    low52_col  = 'LOW52' if 'LOW52' in df.columns else ('52W_LOW' if '52W_LOW' in df.columns else None)
+            for _, row in df.iterrows():
+                try:
+                    sym = str(row[sym_col]).strip()
+                    if not sym or sym.lower() in ['nan', '-']:
+                        continue
 
-    # શેર્સ (EQ, BE, SM) ની સાથે ETFs (E1, E2) પણ સામેલ કર્યા
-    if series_col in df.columns:
-        df = df[df[series_col].isin(['EQ', 'BE', 'SM', 'ST', 'E1', 'E2'])]
+                    # 52W High ચકાસણી: તારીખ આજના દિવસ સાથે મળવી જોઈએ
+                    h_dt = str(row[high_dt_col]).strip()
+                    if h_dt.lower() == check_date.lower():
+                        h_val = float(str(row[high_val_col]).replace(',', ''))
+                        high_list.append({"stock": sym, "val": f"{h_val:.2f}"})
 
-    for _, row in df.iterrows():
-        try:
-            sym = str(row[symbol_col]).strip()
-            close_p = float(row[close_col])
-            high_p = float(row[high_col])
-            low_p = float(row[low_col])
+                    # 52W Low ચકાસણી: તારીખ આજના દિવસ સાથે મળવી જોઈએ
+                    l_dt = str(row[low_dt_col]).strip()
+                    if l_dt.lower() == check_date.lower():
+                        l_val = float(str(row[low_val_col]).replace(',', ''))
+                        low_list.append({"stock": sym, "val": f"{l_val:.2f}"})
+                except Exception:
+                    continue
 
-            # 52W High ચકાસણી
-            if high52_col and high52_col in row:
-                h52 = float(row[high52_col])
-                if h52 > 0 and high_p >= h52:
-                    high_list.append({"stock": sym, "cmp": f"{close_p:.2f}", "rec": f"{h52:.2f}"})
+            # ડેટા મળતાં જ લૂપમાંથી બહાર નીકળો
+            break
 
-            # 52W Low ચકાસણી
-            if low52_col and low52_col in row:
-                l52 = float(row[low52_col])
-                if l52 > 0 and low_p <= l52:
-                    low_list.append({"stock": sym, "cmp": f"{close_p:.2f}", "rec": f"{l52:.2f}"})
-        except Exception:
-            continue
-
-    return high_list, low_list
+    return high_list, low_list, matched_date_str
 
 def send_telegram(text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -116,32 +98,29 @@ def send_telegram(text):
         print("Telegram error:", e)
 
 def main():
-    df = get_nse_bhavcopy()
-    if df is None:
-        send_telegram("⚠️ <b>NSE અપડેટ:</b> NSE સર્વર પરથી ભાવકોપી ડાઉનલોડ થઈ શકી નથી.")
-        return
-
-    highs, lows = process_data(df)
+    highs, lows, trade_date = get_52w_data()
 
     if not highs and not lows:
-        send_telegram(f"ℹ️ <b>NSE અપડેટ:</b> {len(df)} સ્ટોક્સ/ETFs ની ભાવકોપી મળી છે, પરંતુ આજના સેશનમાં કોઈ નવો 52W High કે Low બન્યો નથી.")
+        send_telegram(f"ℹ️ <b>NSE અપડેટ ({trade_date}):</b> આજના સેશનમાં કોઈ નવો 52W High કે Low સ્ટોક/ETF બન્યો નથી.")
         return
 
+    # 52W High ટેબલ
     if highs:
-        msg = f"🚀 <b>NSE 52-Week HIGH (સ્ટોક્સ & ETFs - {len(highs)}):</b>\n<pre>"
-        msg += "Symbol     | CMP      | 52W High\n--------------------------------\n"
-        for s in highs[:30]:
+        msg = f"🚀 <b>NSE 52-Week HIGH ({trade_date}) - {len(highs)} સ્ટોક્સ & ETFs:</b>\n<pre>"
+        msg += "Symbol     | 52W High Price\n---------------------------\n"
+        for s in highs[:35]:
             sym = s['stock'][:10]
-            msg += f"{sym:<10} | {s['cmp']:<8} | {s['rec']:<8}\n"
+            msg += f"{sym:<10} | {s['val']:<12}\n"
         msg += "</pre>"
         send_telegram(msg)
 
+    # 52W Low ટેબલ
     if lows:
-        msg = f"🔻 <b>NSE 52-Week LOW (સ્ટોક્સ & ETFs - {len(lows)}):</b>\n<pre>"
-        msg += "Symbol     | CMP      | 52W Low \n--------------------------------\n"
-        for s in lows[:30]:
+        msg = f"🔻 <b>NSE 52-Week LOW ({trade_date}) - {len(lows)} સ્ટોક્સ & ETFs:</b>\n<pre>"
+        msg += "Symbol     | 52W Low Price \n---------------------------\n"
+        for s in lows[:35]:
             sym = s['stock'][:10]
-            msg += f"{sym:<10} | {s['cmp']:<8} | {s['rec']:<8}\n"
+            msg += f"{sym:<10} | {s['val']:<12}\n"
         msg += "</pre>"
         send_telegram(msg)
 
