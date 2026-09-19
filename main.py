@@ -29,8 +29,7 @@ def main():
     found_file = None
     file_content = ""
 
-    # હવે +3 થી -5 દિવસ સુધી ચેક કરશે:
-    # કારણ કે શુક્રવારે સાંજે NSE સોમવાર (+2 કે +3 દિવસ) ના નામવાળી ફાઈલ 'Effective for Next Date' તરીકે અપલોડ કરે છે!
+    # આગળ-પાછળના દિવસોની ફાઈલો ચેક કરો
     check_offsets = [3, 2, 1, 0, -1, -2, -3]
 
     for offset in check_offsets:
@@ -52,7 +51,6 @@ def main():
             except Exception:
                 continue
 
-        # સૌથી લેટેસ્ટ તારીખની ફાઈલ મળતાં જ લૂપ બંધ કરો
         if found_file:
             break
 
@@ -60,7 +58,6 @@ def main():
         send_telegram("❌ NSE 52W રિપોર્ટ ફાઈલ ડાઉનલોડ થઈ શકી નથી.")
         return
 
-    # હેડર લાઈન શોધો
     lines = file_content.splitlines()
     header_idx = -1
     for idx, l in enumerate(lines[:10]):
@@ -77,7 +74,6 @@ def main():
     l_val_col = df.columns[4]
     l_dt_col = df.columns[5]
 
-    # ફાઈલમાંથી સૌથી છેલ્લી (લેટેસ્ટ) ટ્રેડિંગ તારીખ શોધો
     all_dates = pd.concat([
         pd.to_datetime(df[h_dt_col].replace('-', None), format="%d-%b-%Y", errors='coerce'),
         pd.to_datetime(df[l_dt_col].replace('-', None), format="%d-%b-%Y", errors='coerce')
@@ -90,7 +86,6 @@ def main():
     latest_date_dt = all_dates.max()
     latest_date_str = latest_date_dt.strftime("%d-%b-%Y").upper()
 
-    # સ્ટોક્સ અને ETFs ફિલ્ટર
     allowed_series = ['EQ', 'BE', 'SM', 'ST', 'BZ', 'E1', 'E2']
     df_filtered = df[df[series_col].isin(allowed_series)]
 
@@ -102,14 +97,12 @@ def main():
             if not sym or sym in ['-', 'nan']:
                 continue
 
-            # High ચેક
             h_dt = str(row[h_dt_col]).strip().upper()
             if h_dt == latest_date_str:
                 val = str(row[h_val_col]).replace(',', '').strip()
                 if val != '-':
                     high_list.append({"stock": sym, "val": f"{float(val):.2f}"})
 
-            # Low ચેક
             l_dt = str(row[l_dt_col]).strip().upper()
             if l_dt == latest_date_str:
                 val = str(row[l_val_col]).replace(',', '').strip()
@@ -118,38 +111,35 @@ def main():
         except Exception:
             continue
 
+    # હેડર મેસેજ
     header_msg = (
-        f"📊 <b>NSE 52-WEEK HIGH & LOW રિપોર્ટ</b>\n"
-        f"📅 સેશન તારીખ: <b>{latest_date_str}</b>\n"
-        f"🚀 52W High: {len(high_list)} સ્ટોક્સ/ETFs\n"
-        f"🔻 52W Low: {len(low_list)} સ્ટોક્સ/ETFs\n"
+        f"📊 <b>NSE 52-WEEK HIGH & LOW અપડેટ</b>\n"
+        f"📅 સેશન તારીખ: <b>{latest_date_str}</b>\n\n"
+        f"🚀 <b>52W High:</b> {len(high_list)} સ્ટોક્સ & ETFs\n"
+        f"🔻 <b>52W Low:</b> {len(low_list)} સ્ટોક્સ & ETFs\n"
     )
     send_telegram(header_msg)
 
-    # High લિસ્ટ મોકલો
+    # 52W High સ્ટોક્સ - મોટા અને બોલ્ડ અક્ષરો સાથે
     if high_list:
-        chunk_size = 30
+        chunk_size = 25
         for i in range(0, len(high_list), chunk_size):
             chunk = high_list[i:i + chunk_size]
-            part_str = f" (ભાગ {i//chunk_size + 1})" if len(high_list) > chunk_size else ""
-            msg = f"🚀 <b>52-Week HIGH સ્ટોક્સ & ETFs{part_str}:</b>\n<pre>"
-            msg += "Symbol     | 52W High Price\n---------------------------\n"
+            part = f" (ભાગ {i//chunk_size + 1})" if len(high_list) > chunk_size else ""
+            msg = f"🚀 <b>52-Week HIGH સ્ટોક્સ & ETFs{part}:</b>\n\n"
             for s in chunk:
-                msg += f"{s['stock'][:10]:<10} | {s['val']:<14}\n"
-            msg += "</pre>"
+                msg += f"🔹 <b>{s['stock']}</b>  ➔  ₹<b>{s['val']}</b>\n"
             send_telegram(msg)
 
-    # Low લિસ્ટ મોકલો
+    # 52W Low સ્ટોક્સ - મોટા અને બોલ્ડ અક્ષરો સાથે
     if low_list:
-        chunk_size = 30
+        chunk_size = 25
         for i in range(0, len(low_list), chunk_size):
             chunk = low_list[i:i + chunk_size]
-            part_str = f" (ભાગ {i//chunk_size + 1})" if len(low_list) > chunk_size else ""
-            msg = f"🔻 <b>52-Week LOW સ્ટોક્સ & ETFs{part_str}:</b>\n<pre>"
-            msg += "Symbol     | 52W Low Price \n---------------------------\n"
+            part = f" (ભાગ {i//chunk_size + 1})" if len(low_list) > chunk_size else ""
+            msg = f"🔻 <b>52-Week LOW સ્ટોક્સ & ETFs{part}:</b>\n\n"
             for s in chunk:
-                msg += f"{s['stock'][:10]:<10} | {s['val']:<14}\n"
-            msg += "</pre>"
+                msg += f"🔸 <b>{s['stock']}</b>  ➔  ₹<b>{s['val']}</b>\n"
             send_telegram(msg)
 
 if __name__ == "__main__":
