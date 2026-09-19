@@ -21,9 +21,8 @@ def get_52w_data():
 
     today = datetime.now()
     high_list, low_list = [], []
-    matched_date_str = ""
+    trade_date_str = ""
 
-    # છેલ્લા 5 દિવસમાંથી ઉપલબ્ધ ફાઇલ શોધો
     for i in range(5):
         target_date = today - timedelta(days=i)
         d_str = target_date.strftime("%d%m%Y")          # 18092026
@@ -38,53 +37,53 @@ def get_52w_data():
                 r = session.get(u, headers=HEADERS, timeout=15)
                 if r.status_code == 200 and len(r.text) > 1000:
                     content = r.text
-                    matched_date_str = check_date
+                    trade_date_str = check_date
                     break
             except Exception:
                 continue
 
         if content:
-            # લાઇન 3 થી હેડર્સ શરૂ થાય છે (Skip initial 2 lines)
+            # 2 લાઈન ડિસ્ક્લેમર છોડીને ત્રીજી લાઈન હેડર તરીકે લો
             df = pd.read_csv(io.StringIO(content), skiprows=2)
-            df.columns = [str(c).strip().replace(' ', '_').upper() for c in df.columns]
-
-            # કોલમ્સ: SYMBOL, SERIES, ADJUSTED_52_WEEK_HIGH, 52_WEEK_HIGH_DT, ADJUSTED_52_WEEK_LOW, 52_WEEK_LOW_DT
+            
+            # કોલમના નામ કોઈપણ ફોર્મેટમાં હોય તો પણ ઈન્ડેક્સ નંબરથી પકડો
+            # Col 0: SYMBOL | Col 1: SERIES | Col 2: High Price | Col 3: High Date | Col 4: Low Price | Col 5: Low Date
             sym_col = df.columns[0]
             series_col = df.columns[1]
-            high_val_col = df.columns[2]
-            high_dt_col = df.columns[3]
-            low_val_col = df.columns[4]
-            low_dt_col = df.columns[5]
+            h_val_col = df.columns[2]
+            h_dt_col = df.columns[3]
+            l_val_col = df.columns[4]
+            l_dt_col = df.columns[5]
 
-            # શેર્સ અને ETFs (EQ, BE, SM, ST, E1, E2)
-            allowed_series = ['EQ', 'BE', 'SM', 'ST', 'E1', 'E2']
-            if series_col in df.columns:
-                df = df[df[series_col].isin(allowed_series)]
+            # તારીખ સરખામણી માટે ક્લીન ટેક્સ્ટ બનાવો (e.g. '18-sep-2026')
+            target_dt_clean = check_date.replace(" ", "").strip().lower()
 
             for _, row in df.iterrows():
                 try:
                     sym = str(row[sym_col]).strip()
-                    if not sym or sym.lower() in ['nan', '-']:
+                    if not sym or sym.lower() in ['nan', '-', 'symbol']:
                         continue
 
-                    # 52W High ચકાસણી: તારીખ આજના દિવસ સાથે મળવી જોઈએ
-                    h_dt = str(row[high_dt_col]).strip()
-                    if h_dt.lower() == check_date.lower():
-                        h_val = float(str(row[high_val_col]).replace(',', ''))
-                        high_list.append({"stock": sym, "val": f"{h_val:.2f}"})
+                    # High Date ચેક
+                    h_dt = str(row[h_dt_col]).replace(" ", "").strip().lower()
+                    if h_dt == target_dt_clean:
+                        val = str(row[h_val_col]).replace(',', '').strip()
+                        if val != '-':
+                            high_list.append({"stock": sym, "val": f"{float(val):.2f}"})
 
-                    # 52W Low ચકાસણી: તારીખ આજના દિવસ સાથે મળવી જોઈએ
-                    l_dt = str(row[low_dt_col]).strip()
-                    if l_dt.lower() == check_date.lower():
-                        l_val = float(str(row[low_val_col]).replace(',', ''))
-                        low_list.append({"stock": sym, "val": f"{l_val:.2f}"})
+                    # Low Date ચેક
+                    l_dt = str(row[l_dt_col]).replace(" ", "").strip().lower()
+                    if l_dt == target_dt_clean:
+                        val = str(row[l_val_col]).replace(',', '').strip()
+                        if val != '-':
+                            low_list.append({"stock": sym, "val": f"{float(val):.2f}"})
                 except Exception:
                     continue
 
-            # ડેટા મળતાં જ લૂપમાંથી બહાર નીકળો
+            # ડેટા પ્રોસેસ થઈ ગયો એટલે લૂપ પૂરું કરો
             break
 
-    return high_list, low_list, matched_date_str
+    return high_list, low_list, trade_date_str
 
 def send_telegram(text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -95,7 +94,7 @@ def send_telegram(text):
             "parse_mode": "HTML"
         }, timeout=10)
     except Exception as e:
-        print("Telegram error:", e)
+        print("Telegram send error:", e)
 
 def main():
     highs, lows, trade_date = get_52w_data()
@@ -104,7 +103,7 @@ def main():
         send_telegram(f"ℹ️ <b>NSE અપડેટ ({trade_date}):</b> આજના સેશનમાં કોઈ નવો 52W High કે Low સ્ટોક/ETF બન્યો નથી.")
         return
 
-    # 52W High ટેબલ
+    # 52-Week High ટેબલ
     if highs:
         msg = f"🚀 <b>NSE 52-Week HIGH ({trade_date}) - {len(highs)} સ્ટોક્સ & ETFs:</b>\n<pre>"
         msg += "Symbol     | 52W High Price\n---------------------------\n"
@@ -114,7 +113,7 @@ def main():
         msg += "</pre>"
         send_telegram(msg)
 
-    # 52W Low ટેબલ
+    # 52-Week Low ટેબલ
     if lows:
         msg = f"🔻 <b>NSE 52-Week LOW ({trade_date}) - {len(lows)} સ્ટોક્સ & ETFs:</b>\n<pre>"
         msg += "Symbol     | 52W Low Price \n---------------------------\n"
@@ -126,3 +125,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
