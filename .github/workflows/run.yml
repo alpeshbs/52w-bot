@@ -1,7 +1,9 @@
 name: NSE 52W Tracker
+
 on:
   schedule:
-    - cron: '30 10 * * 1-5'
+    # દર સોમવાર થી શુક્રવાર ભારતીય સમય મુજબ સાંજે ૮:૦૦ વાગ્યે (UTC 14:30)
+    - cron: '30 14 * * 1-5'
   workflow_dispatch:
 
 jobs:
@@ -18,7 +20,7 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install requests pandas beautifulsoup4
+          pip install requests pandas
 
       - name: Run Script
         run: |
