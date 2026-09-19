@@ -1,60 +1,62 @@
 import requests
-import pandas as pd
-from datetime import datetime, timedelta
-from nselib import capital_market
+from bs4 import BeautifulSoup
 
 BOT_TOKEN = "8970900222:AAGpmXOWc1kFBeGg-VgS3Ec-eLXZxswqiCU"
 CHAT_IDS = ["583221734", "1563070801", "1051774043"]
 
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+}
+
 def get_52w_data():
-    df = None
-    today = datetime.now()
-    
-    # છેલ્લા ટ્રેડિંગ દિવસની ભાવકોપી લાવો
-    for i in range(1, 6):
-        trade_date = (today - timedelta(days=i)).strftime("%d-%m-%Y")
-        try:
-            temp_df = capital_market.bhav_copy_with_delivery(trade_date=trade_date)
-            if temp_df is not None and not temp_df.empty:
-                df = temp_df
-                print(f"સફળ ટ્રેડિંગ તારીખ: {trade_date}")
-                break
-        except Exception:
-            continue
+    high_list = []
+    low_list = []
 
-    high_list, low_list = [], []
+    # 1. 52-Week High Stocks (NSE)
+    try:
+        url_high = "https://money.rediff.com/gainers/nse/daily/nifty52weekhigh"
+        r = requests.get(url_high, headers=HEADERS, timeout=20)
+        if r.status_code == 200:
+            soup = BeautifulSoup(r.text, "html.parser")
+            table = soup.find("table", {"class": "dataTable"})
+            if table:
+                rows = table.find_all("tr")[1:] # હેડર છોડીને
+                for row in rows:
+                    cols = [c.text.strip() for c in row.find_all("td")]
+                    if len(cols) >= 5:
+                        company = cols[0]
+                        cmp_val = cols[3].replace(',', '')
+                        high_val = cols[4].replace(',', '')
+                        high_list.append({
+                            "stock": company,
+                            "cmp": cmp_val,
+                            "rec": high_val
+                        })
+    except Exception as e:
+        print("High error:", e)
 
-    if df is not None and not df.empty:
-        df.columns = [str(c).strip().upper() for c in df.columns]
-        
-        # માત્ર Equity સિરીઝ (EQ / BE / SM)
-        if 'SERIES' in df.columns:
-            df = df[df['SERIES'].isin(['EQ', 'BE', 'SM', 'ST'])]
-
-        for _, row in df.iterrows():
-            sym = str(row.get('SYMBOL', '')).strip()
-            if not sym or sym.lower() == 'nan':
-                continue
-
-            try:
-                close_p = float(str(row.get('CLOSE_PRICE', row.get('LAST_PRICE', 0))).replace(',', ''))
-                high_p  = float(str(row.get('HIGH_PRICE', 0)).replace(',', ''))
-                low_p   = float(str(row.get('LOW_PRICE', 0)).replace(',', ''))
-                
-                # 52 Week High / Low ફિલ્ડ્સ
-                h52 = float(str(row.get('HIGH_52', row.get('52W_HIGH', 0))).replace(',', '')) if ('HIGH_52' in df.columns or '52W_HIGH' in df.columns) else 0
-                l52 = float(str(row.get('LOW_52', row.get('52W_LOW', 0))).replace(',', '')) if ('LOW_52' in df.columns or '52W_LOW' in df.columns) else 0
-
-                # જો સ્પષ્ટ 52W કોલમ હોય તો તેના પર, અન્યથા ભાવ પર ચકાસણી
-                if h52 > 0 and high_p >= (h52 * 0.998):
-                    high_list.append({"stock": sym, "cmp": f"{close_p:.2f}", "rec": f"{h52:.2f}"})
-                elif h52 == 0 and high_p > 0:
-                    pass
-
-                if l52 > 0 and low_p <= (l52 * 1.002):
-                    low_list.append({"stock": sym, "cmp": f"{close_p:.2f}", "rec": f"{l52:.2f}"})
-            except Exception:
-                continue
+    # 2. 52-Week Low Stocks (NSE)
+    try:
+        url_low = "https://money.rediff.com/losers/nse/daily/nifty52weeklow"
+        r = requests.get(url_low, headers=HEADERS, timeout=20)
+        if r.status_code == 200:
+            soup = BeautifulSoup(r.text, "html.parser")
+            table = soup.find("table", {"class": "dataTable"})
+            if table:
+                rows = table.find_all("tr")[1:]
+                for row in rows:
+                    cols = [c.text.strip() for c in row.find_all("td")]
+                    if len(cols) >= 5:
+                        company = cols[0]
+                        cmp_val = cols[3].replace(',', '')
+                        low_val = cols[4].replace(',', '')
+                        low_list.append({
+                            "stock": company,
+                            "cmp": cmp_val,
+                            "rec": low_val
+                        })
+    except Exception as e:
+        print("Low error:", e)
 
     return high_list, low_list
 
@@ -66,18 +68,17 @@ def make_table(items, title, col):
     for i in range(0, len(items), chunk_size):
         chunk = items[i:i+chunk_size]
         t = f"{title} (ભાગ {i//chunk_size + 1})\n" if len(items) > chunk_size else f"{title}\n"
-        t += f"<pre>Stock      | CMP      | {col:<8}\n--------------------------------\n"
+        t += f"<pre>Company    | CMP      | {col:<8}\n--------------------------------\n"
         for s in chunk:
-            sym = s['stock'][:10]
-            t += f"{sym:<10} | {s['cmp']:<8} | {s['rec']:<8}\n"
+            c_name = s['stock'][:10]
+            t += f"{c_name:<10} | {s['cmp']:<8} | {s['rec']:<8}\n"
         t += "</pre>\n"
         msgs.append(t)
     return msgs
 
 def main():
     highs, lows = get_52w_data()
-    
-    all_msgs = ["📊 <b>NSE 52-WEEK HIGH & LOW ડેઇલી અપડેટ</b>\n(સત્તાવાર NSE ભાવકોપી ડેટા)"]
+    all_msgs = ["📊 <b>NSE 52-WEEK HIGH & LOW ડેઇલી અપડેટ</b>\n(તમામ લિસ્ટેડ સ્ટોક્સ અને નવા રેકોર્ડ્સ)"]
     all_msgs += make_table(highs, "🚀 <b>52-Week HIGH સ્ટોક્સ:</b>", "52W High")
     all_msgs += make_table(lows, "🔻 <b>52-Week LOW સ્ટોક્સ:</b>", "52W Low")
 
@@ -94,3 +95,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
