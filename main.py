@@ -4,18 +4,22 @@ import pandas as pd
 from datetime import datetime, timedelta
 
 BOT_TOKEN = "8970900222:AAGpmXOWc1kFBeGg-VgS3Ec-eLXZxswqiCU"
-TARGET_CHAT_ID = "1051774043"
+
+# બંને યુઝર ID અહીં લિસ્ટમાં ઉમેરેલા છે
+TARGET_CHAT_IDS = ["1051774043", "583221734"]
 
 def send_telegram(text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    try:
-        requests.post(url, json={
-            "chat_id": TARGET_CHAT_ID,
-            "text": text,
-            "parse_mode": "HTML"
-        }, timeout=15)
-    except Exception as e:
-        print("Telegram error:", e)
+    # બંને યુઝરને વારાફરતી મેસેજ મોકલો
+    for chat_id in TARGET_CHAT_IDS:
+        try:
+            requests.post(url, json={
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "HTML"
+            }, timeout=15)
+        except Exception as e:
+            print(f"Telegram error for chat_id {chat_id}:", e)
 
 def main():
     now_ist = datetime.utcnow() + timedelta(hours=5, minutes=30)
